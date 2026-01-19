@@ -1,71 +1,147 @@
+/**
+ * Auto Queue Manager - Tự động tìm ván mới
+ * Nhận diện nút "X phút mới" và "Tái đấu" từ modal kết thúc game
+ */
 class AutoQueueManager {
     constructor(overlay) {
         this.overlay = overlay;
         this.isQueuing = false;
-        this.gameModeMap = {
-            'bullet': '1 min',
-            'blitz_3': '3 min',
-            'blitz_5': '5 min',
-            'rapid_10': '10 min'
+        this.checkInterval = null;
+
+        // Map mode setting to button text patterns
+        this.modeToTimeText = {
+            'bullet': ['1 phút', '1 min', '2 phút', '2 min'],
+            'blitz': ['3 phút', '3 min', '5 phút', '5 min'],
+            'rapid': ['10 phút', '10 min', '15 phút', '15 min', '30 phút', '30 min']
         };
     }
 
-    async checkForAutoQueue() {
-        if (!this.overlay.settings.autoQueueEnabled || this.isQueuing) return;
+    startMonitoring() {
+        if (this.checkInterval) return;
+        this.checkInterval = setInterval(() => this._checkGameOver(), 1500);
+        console.log('[AutoQueue] Monitoring started');
+    }
 
-        // Detect game over
-        const gameOverModal = document.querySelector('.game-over-modal-content, .game-result-component');
-        if (!gameOverModal) return;
-
-        this.isQueuing = true;
-        console.log('[AutoQueue] Game over detected. Queuing in 5s...');
-
-        // Human-like pause
-        await this._sleep(3000 + Math.random() * 4000);
-
-        try {
-            await this._triggerNewGame();
-        } catch (e) {
-            console.error('[AutoQueue] Failed:', e);
-        } finally {
-            this.isQueuing = false;
+    stopMonitoring() {
+        if (this.checkInterval) {
+            clearInterval(this.checkInterval);
+            this.checkInterval = null;
         }
     }
 
-    async _triggerNewGame() {
-        // Mode: 'same' or specific like 'rapid_10'
+    async _checkGameOver() {
+        if (!this.overlay.settings.autoQueueEnabled || this.isQueuing) return;
+        if (this.overlay.gameState.isInGame) return;
+
+        // Tìm modal kết thúc game - có nút "Xem lại ván đấu" hoặc "10 phút mới"
+        const gameOverIndicators = [
+            'Bạn đã thắng', 'Bạn đã thua', 'Ván cờ hòa',
+            'You won', 'You lost', 'Draw',
+            'Xem lại ván đấu', 'Game Review'
+        ];
+
+        const pageText = document.body.innerText;
+        const hasGameOver = gameOverIndicators.some(txt => pageText.includes(txt));
+
+        // Cũng check xem có nút "X phút mới" hoặc "Tái đấu" không
+        const newGameBtn = this._findNewGameButton();
+        const rematchBtn = this._findRematchButton();
+
+        if (!hasGameOver && !newGameBtn && !rematchBtn) return;
+
+        this.isQueuing = true;
+        console.log('[AutoQueue] Game over detected!');
+
+        try {
+            // Human-like pause (3-6 giây)
+            const waitTime = 3000 + Math.random() * 3000;
+            console.log(`[AutoQueue] Waiting ${(waitTime / 1000).toFixed(1)}s...`);
+            await this._sleep(waitTime);
+
+            await this._clickNewGame();
+        } catch (e) {
+            console.error('[AutoQueue] Error:', e);
+        } finally {
+            // Reset sau 10s để tránh spam
+            setTimeout(() => { this.isQueuing = false; }, 10000);
+        }
+    }
+
+    async _clickNewGame() {
         const mode = this.overlay.settings.autoQueueMode || 'same';
+        console.log(`[AutoQueue] Mode: ${mode}`);
 
-        if (mode === 'same') {
-            // Look for "Rematch" or "New Game" button
-            const btns = Array.from(document.querySelectorAll('button'));
-            const playAgain = btns.find(b => b.innerText.match(/Play Again|Chơi lại|Rematch|New Game|Ván cờ mới/i));
+        // LUÔN click nút "X phút mới" - KHÔNG bao giờ click "Tái đấu"
+        const newGameBtn = this._findNewGameButton();
 
-            if (playAgain) {
-                console.log('[AutoQueue] Clicking "Play Again"...');
-                playAgain.click();
+        if (newGameBtn) {
+            console.log('[AutoQueue] Clicking New Game button...');
+            newGameBtn.click();
+            return;
+        }
+
+        // Nếu có mode cụ thể (bullet/blitz/rapid), tìm nút phù hợp
+        if (mode !== 'same') {
+            const targetTexts = this.modeToTimeText[mode] || [];
+            const specificBtn = this._findButtonByTimeTexts(targetTexts);
+
+            if (specificBtn) {
+                console.log(`[AutoQueue] Clicking ${mode} button...`);
+                specificBtn.click();
                 return;
             }
         }
 
-        // If specific mode or "Play Again" not found, go to New Game tab
-        console.log(`[AutoQueue] Starting new ${mode} game...`);
-
-        // 1. Click "New Game" tab if needed
-        const newGameTab = document.querySelector('.tabs-tab'); // Usually the first tab
-        if (newGameTab && !newGameTab.classList.contains('active')) {
-            newGameTab.click();
-            await this._sleep(500);
-        }
-
-        // 2. Open Time Control Dropdown if needed
-        // Assuming we are on the play menu
-        // This is complex as it requires interacting with the dropdown.
-        // For MVP, we'll try to click the "Play" button directly if it matches, 
-        // OR try to find the specific time control button if visible.
+        console.log('[AutoQueue] No "New Game" button found');
     }
 
-    _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+    _findNewGameButton() {
+        // Tìm nút có pattern "X phút mới" hoặc "X min"
+        const buttons = Array.from(document.querySelectorAll('button'));
+
+        for (const btn of buttons) {
+            const text = btn.textContent?.trim().toLowerCase() || '';
+            // Pattern: "10 phút mới", "1 phút mới", "New 10 min", etc.
+            if (text.match(/\d+\s*(phút|min)/i) && !text.includes('xem lại')) {
+                if (btn.offsetParent !== null) return btn; // Visible check
+            }
+        }
+
+        return null;
+    }
+
+    _findRematchButton() {
+        const patterns = [/tái đấu/i, /rematch/i, /play again/i, /chơi lại/i];
+        const buttons = Array.from(document.querySelectorAll('button'));
+
+        for (const btn of buttons) {
+            const text = btn.textContent?.trim() || '';
+            if (patterns.some(p => p.test(text)) && btn.offsetParent !== null) {
+                return btn;
+            }
+        }
+
+        return null;
+    }
+
+    _findButtonByTimeTexts(timeTexts) {
+        const buttons = Array.from(document.querySelectorAll('button'));
+
+        for (const btn of buttons) {
+            const text = btn.textContent?.trim().toLowerCase() || '';
+            for (const timeText of timeTexts) {
+                if (text.includes(timeText.toLowerCase()) && btn.offsetParent !== null) {
+                    return btn;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    _sleep(ms) {
+        return new Promise(r => setTimeout(r, ms));
+    }
 }
 
 if (typeof window !== 'undefined') {

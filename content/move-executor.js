@@ -182,14 +182,61 @@ class MoveExecutor {
         };
     }
 
-    async _handlePromotion(type) {
-        await this.sleep(500);
-        const pieces = document.querySelectorAll('.promotion-piece, .promotion-window img');
-        for (const p of pieces) {
-            if (p.className.includes(type) || p.src?.includes(type)) {
-                const r = p.getBoundingClientRect();
-                this._mouseEvent(p, 'click', r.left + r.width / 2, r.top + r.height / 2);
-                return;
+    async _handlePromotion(promotionType) {
+        // promotionType: 'q' (Queen), 'r' (Rook), 'n' (Knight), 'b' (Bishop)
+        console.log('[MoveExecutor] Handling promotion to:', promotionType);
+
+        // Wait for promotion dialog
+        await this.sleep(400);
+
+        // Chess.com uses: .promotion-piece.wq, .promotion-piece.bq, etc.
+        // Try finding the promotion window first
+        const promotionWindow = document.querySelector('.promotion-window');
+        if (!promotionWindow) {
+            console.warn('[MoveExecutor] Promotion window not found');
+            return;
+        }
+
+        // Map promotion type to piece class
+        const pieceType = promotionType.toLowerCase();
+
+        // Try both white and black selectors
+        const selectors = [
+            `.promotion-piece.w${pieceType}`,  // White: wq, wr, wn, wb
+            `.promotion-piece.b${pieceType}`,  // Black: bq, br, bn, bb
+            `.promotion-piece[class*="${pieceType}"]`,
+            `.${pieceType}` // Fallback
+        ];
+
+        let pieceEl = null;
+        for (const sel of selectors) {
+            pieceEl = promotionWindow.querySelector(sel) || document.querySelector(sel);
+            if (pieceEl) break;
+        }
+
+        if (pieceEl) {
+            const r = pieceEl.getBoundingClientRect();
+            const x = r.left + r.width / 2;
+            const y = r.top + r.height / 2;
+
+            // Human-like delay before clicking
+            await this.sleep(this._rand(100, 300));
+
+            this._mouseEvent(pieceEl, 'mousedown', x, y, { button: 0 });
+            await this.sleep(50);
+            this._mouseEvent(pieceEl, 'mouseup', x, y, { button: 0 });
+            this._mouseEvent(pieceEl, 'click', x, y);
+
+            console.log('[MoveExecutor] Clicked promotion piece:', pieceType);
+        } else {
+            console.warn('[MoveExecutor] Promotion piece not found for:', pieceType);
+
+            // Fallback: Click first piece (Queen - top option)
+            const firstPiece = promotionWindow.querySelector('.promotion-piece');
+            if (firstPiece) {
+                const r = firstPiece.getBoundingClientRect();
+                this._mouseEvent(firstPiece, 'click', r.left + r.width / 2, r.top + r.height / 2);
+                console.log('[MoveExecutor] Fallback: clicked first promotion piece');
             }
         }
     }

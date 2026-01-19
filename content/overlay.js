@@ -23,10 +23,11 @@ class OverlayUI {
       showPieceNames: true,
       depth: 15,
       autoDepthEnabled: true,
-      variants: 3,
+      variants: 5, // Cần nhiều variants để chọn nước lỗi
       apiType: 'stockfish',
       autoQueueEnabled: false,
-      autoQueueMode: 'same' // 'same', 'bullet', 'blitz', 'rapid'
+      autoQueueMode: 'same',
+      humanErrorRate: 10 // 0-20%, tỉ lệ đi nước không tốt nhất
     };
 
     this.gameState = {
@@ -37,11 +38,16 @@ class OverlayUI {
       opponentName: '---',
       myElo: '---',
       opponentElo: '---',
-      moves: []
+      moves: [],
+      openingName: '' // Tên khai cuộc
     };
+
+    // Lưu các variants từ API để chọn nước lỗi
+    this.alternativeMoves = [];
 
     this.tempoTracker = window.OpponentTempoTracker ? new window.OpponentTempoTracker() : null;
     this.autoQueueManager = window.AutoQueueManager ? new window.AutoQueueManager(this) : null;
+    this.lastUrl = location.href;
   }
 
   async init() {
@@ -51,7 +57,9 @@ class OverlayUI {
     this._setupEventListeners();
     document.body.appendChild(this.container);
     this._startGameMonitor();
+    this._startUrlMonitor(); // Theo dõi URL changes
     if (this.settings.showPieceNames) this._showPieceNames();
+    this.autoQueueManager?.startMonitoring();
     console.log('[OverlayUI] Ready!');
   }
 
@@ -81,8 +89,9 @@ class OverlayUI {
           <button class="ext-toggle">−</button>
         </div>
         <div class="ext-body">
-          <div class="game-status not-in-game" id="game-status"><span class="status-icon">⏳</span><span>Chờ ván đấu...</span></div>
-          <div class="game-mode-row" id="game-mode-info" style="display:none"><span>⏱️ Thời gian:</span><span class="game-mode-value" id="game-mode-value">--</span></div>
+          <div class="game-status not-in-game" id="game-status"><svg class="status-icon-svg" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 6v6l4 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Chờ ván đấu...</span></div>
+          <div class="game-mode-row" id="game-mode-info" style="display:none"><svg class="row-icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 6v6l4 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Thời gian:</span><span class="game-mode-value" id="game-mode-value">--</span></div>
+          <div class="game-mode-row" id="opening-info" style="display:none"><svg class="row-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h12a2 2 0 0 1 2 2v14l-8-4-8 4V6a2 2 0 0 1 2-2z"/></svg><span>Khai cuộc:</span><span class="opening-name" id="opening-name">--</span></div>
           <div class="game-info-row">
             <div class="color-dot black" id="opponent-color"></div>
             <div class="player-info"><div class="player-name" id="opponent-name">Đối thủ</div><div class="player-elo" id="opponent-elo">---</div></div>
@@ -156,6 +165,10 @@ class OverlayUI {
             <span class="control-label">Độ sâu: <b id="depth-val">${this.settings.depth}</b></span>
             <input type="range" class="mini-slider" id="slider-depth" min="1" max="18" value="${this.settings.depth}">
           </div>
+          <div class="control-row">
+            <span class="control-label">Lỗi người: <b id="error-val">${this.settings.humanErrorRate}%</b></span>
+            <input type="range" class="mini-slider error-slider" id="slider-error" min="0" max="20" value="${this.settings.humanErrorRate}">
+          </div>
           <button class="btn-save" id="btn-save">Lưu Cài Đặt</button>
         </div>
         <div class="status-bar">
@@ -168,20 +181,24 @@ class OverlayUI {
 
   _getCSS() {
     return `
-      #chess-ext-overlay { --cc-bg:#312e2b; --cc-bg-dark:#272522; --cc-bg-darker:#21201d; --cc-border:#454341; --cc-text:#fff; --cc-text-dim:#b0ada9; --cc-text-muted:#9e9b97; --cc-green:#81b64c; --cc-green-dark:#629a24; --cc-orange:#fa9c1b; --cc-red:#e04040; position:fixed; top:10px; right:10px; z-index:999999; font-family:'Segoe UI',system-ui,sans-serif; font-size:13px; color:var(--cc-text); pointer-events:none; }
+      #chess-ext-overlay { --cc-bg:#312e2b; --cc-bg-dark:#272522; --cc-bg-darker:#21201d; --cc-border:#454341; --cc-text:#fff; --cc-text-dim:#b0ada9; --cc-text-muted:#9e9b97; --cc-green:#81b64c; --cc-green-dark:#629a24; --cc-orange:#fa9c1b; --cc-red:#e04040; --cc-purple:#b794f4; position:fixed; top:10px; right:10px; z-index:999999; font-family:'Segoe UI',system-ui,sans-serif; font-size:13px; color:var(--cc-text); pointer-events:none; }
       #chess-ext-overlay * { box-sizing:border-box; }
-      .ext-panel { background:var(--cc-bg); border:1px solid var(--cc-border); border-radius:6px; margin-bottom:6px; pointer-events:auto; overflow:hidden; box-shadow:0 4px 12px rgba(0,0,0,0.4); width:220px; }
-      .ext-header { display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:var(--cc-bg-dark); cursor:pointer; user-select:none; border-bottom:1px solid var(--cc-border); }
-      .ext-header:hover { background:var(--cc-bg-darker); }
-      .ext-title { font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; display:flex; align-items:center; gap:6px; color:var(--cc-text); }
+      .ext-panel { background:linear-gradient(180deg, var(--cc-bg) 0%, #2a2723 100%); border:1px solid var(--cc-border); border-radius:8px; margin-bottom:6px; pointer-events:auto; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,0.5); width:220px; transition:transform 0.15s, box-shadow 0.15s; }
+      .ext-panel:hover { box-shadow:0 6px 20px rgba(0,0,0,0.6); }
+      .ext-header { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; background:linear-gradient(180deg, var(--cc-bg-dark) 0%, #232220 100%); cursor:pointer; user-select:none; border-bottom:1px solid var(--cc-border); }
+      .ext-header:hover { background:linear-gradient(180deg, #2a2826 0%, #1f1e1c 100%); }
+      .ext-title { font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:0.8px; display:flex; align-items:center; gap:6px; color:var(--cc-text); }
       .ext-title svg { width:14px; height:14px; fill:var(--cc-green); }
-      .ext-toggle { background:var(--cc-bg); border:1px solid var(--cc-border); color:var(--cc-text-dim); cursor:pointer; font-size:11px; font-weight:700; width:20px; height:20px; border-radius:3px; display:flex; align-items:center; justify-content:center; }
-      .ext-toggle:hover { background:var(--cc-border); color:var(--cc-text); }
-      .ext-body { padding:10px; }
+      .ext-toggle { background:var(--cc-bg); border:1px solid var(--cc-border); color:var(--cc-text-dim); cursor:pointer; font-size:12px; font-weight:700; width:22px; height:22px; border-radius:4px; display:flex; align-items:center; justify-content:center; transition:all 0.15s; }
+      .ext-toggle:hover { background:var(--cc-green); color:#fff; border-color:var(--cc-green); }
+      .ext-body { padding:12px; }
       .ext-panel.collapsed .ext-body { display:none; }
       .game-status { display:flex; align-items:center; gap:8px; padding:8px; border-radius:4px; font-size:11px; font-weight:600; margin-bottom:8px; }
       .game-status.in-game { background:rgba(129,182,76,0.15); border:1px solid var(--cc-green); color:var(--cc-green); }
       .game-status.not-in-game { background:var(--cc-bg-dark); border:1px solid var(--cc-border); color:var(--cc-text-dim); }
+      .status-icon-svg { width:16px; height:16px; flex-shrink:0; }
+      .row-icon { width:12px; height:12px; flex-shrink:0; fill:var(--cc-text-muted); margin-right:2px; }
+      .game-mode-row .row-icon { fill:var(--cc-orange); }
       .game-info-row { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--cc-border); }
       .game-info-row:last-child { border:none; }
       .color-dot { width:20px; height:20px; border-radius:3px; border:2px solid var(--cc-border); }
@@ -230,6 +247,9 @@ class OverlayUI {
       .next-move-item { display:inline-block; background:var(--cc-bg); border:1px solid var(--cc-border); padding:2px 5px; border-radius:2px; margin:2px; }
       .game-mode-row { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--cc-text-dim); margin-bottom:8px; padding:0 4px; }
       .game-mode-value { color:var(--cc-orange); font-weight:700; margin-left:auto; }
+      .opening-name { color:#b794f4; font-weight:600; margin-left:auto; font-size:10px; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      #opening-info .row-icon { fill:#b794f4; }
+      .error-slider::-webkit-slider-thumb { background:var(--cc-orange) !important; }
       .btn-analyze { width:100%; padding:10px; background:var(--cc-green); color:#fff; border:none; border-radius:4px; font-weight:700; font-size:12px; cursor:pointer; transition:all 0.15s; display:flex; align-items:center; justify-content:center; gap:6px; }
       .btn-analyze:hover { background:var(--cc-green-dark); }
       .btn-analyze:active { transform:scale(0.98); }
@@ -317,6 +337,12 @@ class OverlayUI {
       this._saveSettings();
     });
 
+    $('#slider-error').addEventListener('input', e => {
+      this.settings.humanErrorRate = parseInt(e.target.value);
+      $('#error-val').textContent = `${this.settings.humanErrorRate}%`;
+      this._saveSettings();
+    });
+
     $('#btn-save').addEventListener('click', () => this._saveSettingsWithFeedback());
   }
 
@@ -325,20 +351,105 @@ class OverlayUI {
     setInterval(() => this._updateGameState(), 500);
   }
 
+  _startUrlMonitor() {
+    console.log('[OverlayUI] Starting URL/Game monitor...');
+
+    // 1. Theo dõi URL thay đổi (interval)
+    setInterval(() => {
+      if (location.href !== this.lastUrl) {
+        console.log('[OverlayUI] URL changed:', this.lastUrl, '->', location.href);
+        this._handleGameChange();
+      }
+    }, 200);
+
+    // 2. Lắng nghe popstate event (back/forward navigation)
+    window.addEventListener('popstate', () => {
+      console.log('[OverlayUI] Popstate event - navigation detected');
+      this._handleGameChange();
+    });
+
+    // 3. Lắng nghe hashchange
+    window.addEventListener('hashchange', () => {
+      console.log('[OverlayUI] Hashchange event');
+      this._handleGameChange();
+    });
+
+    // 4. Override pushState và replaceState để catch SPA navigation
+    const originalPushState = history.pushState;
+    const originalReplaceState = history.replaceState;
+    const self = this;
+
+    history.pushState = function (...args) {
+      originalPushState.apply(this, args);
+      console.log('[OverlayUI] pushState detected');
+      self._handleGameChange();
+    };
+
+    history.replaceState = function (...args) {
+      originalReplaceState.apply(this, args);
+      console.log('[OverlayUI] replaceState detected');
+      setTimeout(() => self._handleGameChange(), 100);
+    };
+
+    // 5. Theo dõi thay đổi player name (cho biết ván mới bắt đầu)
+    let lastOpponentName = '';
+    setInterval(() => {
+      const oppName = document.querySelector('#board-layout-player-top .cc-user-username-component')?.textContent?.trim();
+      if (oppName && oppName !== lastOpponentName && lastOpponentName !== '') {
+        console.log('[OverlayUI] Opponent changed:', lastOpponentName, '->', oppName);
+        this._handleGameChange();
+      }
+      lastOpponentName = oppName || '';
+    }, 500);
+  }
+
+  _handleGameChange() {
+    console.log('[OverlayUI] Game change detected - reinitializing...');
+    this.lastUrl = location.href;
+
+    // Reset tất cả state
+    this.gameState.isInGame = false;
+    this.lastMoveCount = -1;
+    this.prevMoveCount = -1;
+    this.lastAnalysis = null;
+    this.alternativeMoves = [];
+    this.tempoTracker?.reset();
+    this.clearHighlights();
+
+    // Force update ngay và sau 500ms
+    this._updateGameState();
+    setTimeout(() => this._updateGameState(), 500);
+    setTimeout(() => this._updateGameState(), 1000);
+  }
+
   _updateGameState() {
     try {
-      const resignBtn = document.querySelector('button[aria-label*="Resign"], [class*="resign"]');
-      const gameOver = document.querySelector('[class*="game-over"], [class*="modal-game-over"]');
-      const inGame = !!(resignBtn && !gameOver);
+      // === SIMPLE BUT ROBUST GAME DETECTION === 
+      const board = document.querySelector('wc-chess-board, chess-board');
+      const pieces = document.querySelectorAll('.piece');
+
+      // Check các indicators - bất kỳ cái nào có = đang chơi
+      const hasResign = !!document.querySelector('.resign-button-component, [data-cy="resign-button"]');
+      const hasClock = !!document.querySelector('.clock-component');
+      const hasMoveList = !!document.querySelector('wc-simple-move-list');
+      const hasGameOver = !!document.querySelector('.game-over-modal-content, [class*="game-over-header"]');
+
+      // inGame = có board + pieces + (resign hoặc clock hoặc movelist) + không game-over
+      const inGame = !!board && pieces.length >= 10 && (hasResign || hasClock || hasMoveList) && !hasGameOver;
+
+      // Debug log khi có thay đổi
+      if (inGame !== this.gameState.isInGame) {
+        console.log(`[OverlayUI] Game state changed: ${inGame ? 'IN GAME' : 'NOT IN GAME'}`);
+        console.log(`[OverlayUI] Detection: board=${!!board}, pieces=${pieces.length}, resign=${hasResign}, clock=${hasClock}, moveList=${hasMoveList}, gameOver=${hasGameOver}`);
+      }
 
       if (inGame && !this.gameState.isInGame) {
         this.lastMoveCount = -1;
         this.prevMoveCount = -1;
+        this.tempoTracker?.reset();
+        console.log('[OverlayUI] Detected new game started!');
       } else if (!inGame && this.gameState.isInGame) {
-        // Just ended game
-        if (this.settings.autoQueueEnabled) {
-          this.autoQueueManager?.checkForAutoQueue();
-        }
+        console.log('[OverlayUI] Game ended - Auto Queue checking...');
       }
 
       this.gameState.isInGame = inGame;
@@ -346,8 +457,8 @@ class OverlayUI {
 
       const statusEl = this.container.querySelector('#game-status');
       statusEl.innerHTML = inGame
-        ? '<span class="status-icon">✓</span><span>Đang trong trận</span>'
-        : '<span class="status-icon">⏳</span><span>Chờ ván đấu...</span>';
+        ? '<svg class="status-icon-svg" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg><span>Đang trong trận</span>'
+        : '<svg class="status-icon-svg" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 6v6l4 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Chờ ván đấu...</span>';
       statusEl.className = `game-status ${inGame ? 'in-game' : 'not-in-game'}`;
 
       // Update Game Mode Info
@@ -360,11 +471,16 @@ class OverlayUI {
           this.container.querySelector('#game-mode-info').style.display = 'flex';
           this.container.querySelector('#game-mode-value').textContent = `${tyStr} (${tStr})`;
         }
+
+        // === OPENING NAME DETECTION ===
+        this._detectOpeningName();
       } else {
         this.container.querySelector('#game-mode-info').style.display = 'none';
+        this.container.querySelector('#opening-info').style.display = 'none';
       }
 
-      const board = document.querySelector('wc-chess-board, chess-board, .board');
+
+      // Reuse board from above - check for flipped
       this.gameState.myColor = board?.classList.contains('flipped') ? 'black' : 'white';
 
       this._extractPlayerInfo();
@@ -500,6 +616,18 @@ class OverlayUI {
     if (!analysis) return;
     this.lastAnalysis = analysis;
 
+    // Lưu alternative moves cho Intentional Mistake System
+    if (analysis.move) {
+      // Reset và thêm best move
+      this.alternativeMoves = [analysis.move];
+
+      // Thêm các moves từ continuation nếu có (engine thường trả về multi-pv)
+      if (analysis.continuation) {
+        const contMoves = analysis.continuation.split(' ').filter(m => m.length >= 4).slice(0, 3);
+        this.alternativeMoves = [...new Set([analysis.move, ...contMoves])];
+      }
+    }
+
     const $ = sel => this.container.querySelector(sel);
     const ev = analysis.eval || 0;
     const evalEl = $('#eval-value');
@@ -546,26 +674,44 @@ class OverlayUI {
     if (!analysis?.move || this.isAutoExecuting) return;
     this.isAutoExecuting = true;
 
+    // === INTENTIONAL MISTAKE SYSTEM ===
+    let selectedMove = analysis.move;
+    const errorRate = this.settings.humanErrorRate || 0;
+
+    if (errorRate > 0 && this.alternativeMoves.length > 1) {
+      const roll = Math.random() * 100;
+      if (roll < errorRate) {
+        // Chọn nước thứ 2 hoặc 3 thay vì nước tốt nhất
+        const alternatives = this.alternativeMoves.filter(m => m !== analysis.move);
+        if (alternatives.length > 0) {
+          const idx = Math.floor(Math.random() * Math.min(2, alternatives.length));
+          selectedMove = alternatives[idx];
+          console.log(`[AutoPlay] 🎭 INTENTIONAL MISTAKE: ${analysis.move} → ${selectedMove}`);
+        }
+      }
+    }
+
     const move = {
-      from: analysis.move.slice(0, 2),
-      to: analysis.move.slice(2, 4),
-      promotion: analysis.move.length > 4 ? analysis.move[4] : null
+      from: selectedMove.slice(0, 2),
+      to: selectedMove.slice(2, 4),
+      promotion: selectedMove.length > 4 ? selectedMove[4] : null
     };
 
     let delay = 1000;
     if (this.moveExecutor?.humanBehavior) {
+      const remainingTime = this._getRemainingClockTime();
       const base = this.moveExecutor.humanBehavior.calculateThinkTime({
         eval: analysis.eval || 0,
         moveNumber: this.gameState.moves.length + 1,
         isCapture: !!analysis.captured,
         isCheck: analysis.san?.includes('+'),
         positionComplexity: Math.min(1, Math.abs(analysis.eval || 0) / 5),
-        // PASSING TIME INFO
         timeLimit: this.boardDetector?.getGameTimeLimit() || 600,
-        timeType: this.boardDetector?.getGameTimeType() || 'rapid'
+        timeType: this.boardDetector?.getGameTimeType() || 'rapid',
+        remainingTime: remainingTime
       });
       delay = this.tempoTracker?.opponentMoves.length >= 2
-        ? this.tempoTracker.adjustBotThinkTime(base) : base;
+        ? this.tempoTracker.adjustBotThinkTime(base, this.boardDetector?.getGameTimeType()) : base;
     }
 
     console.log(`[AutoPlay] Thinking ${(delay / 1000).toFixed(1)}s`);
@@ -691,6 +837,33 @@ class OverlayUI {
     return { symbol: '?', name: 'quân' };
   }
 
+  _detectOpeningName() {
+    try {
+      // Chess.com hiển thị tên khai cuộc trong phần phân tích
+      const openingEl = document.querySelector('[data-cy="game-info-opening"], .eco-opening-name, .opening-name, [class*="opening"]');
+
+      // Fallback: lấy từ sidebar analysis
+      const analysisOpening = document.querySelector('.analysis-opening, .move-list-eco');
+
+      let openingName = openingEl?.textContent?.trim() || analysisOpening?.textContent?.trim() || '';
+
+      // Loại bỏ mã ECO (A00, B01, etc.) nếu có
+      openingName = openingName.replace(/^[A-E]\d{2}:\s*/, '').trim();
+
+      if (openingName && openingName.length > 2) {
+        this.gameState.openingName = openingName;
+        this.container.querySelector('#opening-info').style.display = 'flex';
+        this.container.querySelector('#opening-name').textContent = openingName.length > 25
+          ? openingName.slice(0, 22) + '...'
+          : openingName;
+      } else {
+        this.container.querySelector('#opening-info').style.display = 'none';
+      }
+    } catch (e) {
+      // Ignore errors
+    }
+  }
+
   _updateAutoDepth() {
     const elo = parseInt(this.gameState.opponentElo?.replace(/\D/g, '') || '0');
     if (!elo) return;
@@ -757,8 +930,32 @@ class OverlayUI {
 
   _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+  _getRemainingClockTime() {
+    // Đọc thời gian còn lại từ đồng hồ của mình (bottom clock)
+    try {
+      const bottomClock = document.querySelector('.clock-bottom .clock-time-monospace, .clock-component.clock-bottom');
+      if (!bottomClock) return null;
+
+      const text = bottomClock.textContent?.trim();
+      if (!text || !text.includes(':')) return null;
+
+      const parts = text.split(':');
+      let seconds = 0;
+      if (parts.length === 2) {
+        seconds = parseInt(parts[0]) * 60 + parseInt(parts[1]);
+      } else if (parts.length === 3) {
+        seconds = parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
+      }
+
+      return seconds * 1000; // Return in ms
+    } catch {
+      return null;
+    }
+  }
+
   destroy() {
     this._hidePieceNames();
+    this.autoQueueManager?.stopMonitoring();
     this.container?.remove();
   }
 }

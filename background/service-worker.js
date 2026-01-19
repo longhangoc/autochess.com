@@ -4,12 +4,17 @@
 
 const DEFAULT_SETTINGS = {
     autoPlayEnabled: true,
+    autoAnalyzeEnabled: true,
+    autoDepthEnabled: true,
+    autoQueueEnabled: false,
+    autoQueueMode: 'same',
     depth: 12,
-    variants: 3,
+    variants: 5,
     thinkingTime: 50,
     highlightEnabled: true,
     arrowsEnabled: true,
-    soundEnabled: false
+    soundEnabled: false,
+    humanErrorRate: 10 // 0-20%
 };
 
 chrome.runtime.onInstalled.addListener(() => {

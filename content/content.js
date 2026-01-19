@@ -2,7 +2,7 @@
  * Main Content Script - Orchestrates các components
  */
 
-let boardDetector, apiClient, moveExecutor, overlayUI, settings;
+let boardDetector, apiClient, moveExecutor, overlayUI, opponentStatsOverlay, settings;
 let autoPlayQueue = [];
 let isProcessingMove = false;
 
@@ -20,6 +20,12 @@ async function initExtension() {
 
         overlayUI = new OverlayUI(boardDetector, apiClient, moveExecutor);
         await overlayUI.init();
+
+        // Init Opponent Stats Overlay
+        if (window.OpponentStatsOverlay) {
+            opponentStatsOverlay = new OpponentStatsOverlay();
+            opponentStatsOverlay.init();
+        }
 
         settings = overlayUI.settings;
 
