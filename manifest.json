@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "Chess Auto-Play Assistant",
+  "version": "1.0.0",
+  "description": "Tự động chơi cờ vua trên chess.com với Stockfish 17 AI engine",
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://www.chess.com/*",
+    "wss://chess-api.com/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.chess.com/*"
+      ],
+      "js": [
+        "lib/chess.js",
+        "lib/chess-api-client.js",
+        "content/chess-board-detector.js",
+        "content/move-executor.js",
+        "content/icons.js",
+        "content/human-behavior.js",
+        "content/auto-queue.js",
+        "content/overlay.js",
+        "content/content.js"
+      ],
+      "css": [
+        "ui/overlay.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "assets/*",
+        "ui/*"
+      ],
+      "matches": [
+        "https://www.chess.com/*"
+      ]
+    }
+  ]
+}
