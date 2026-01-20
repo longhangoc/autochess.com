@@ -49,6 +49,7 @@ function waitForBoard() {
 
 function setupAPICallbacks() {
     apiClient.onBestMove(analysis => {
+        lastProcessedFen = boardDetector.getCurrentFEN() || ''; // Mark as processed
         const parsed = {
             move: analysis.from && analysis.to ? analysis.from + analysis.to + (analysis.promotion || '') : null,
             from: analysis.from,
@@ -81,6 +82,13 @@ function setupAPICallbacks() {
     apiClient.onConnect(() => {
         console.log('[API] Connected');
         overlayUI.updateConnectionStatus(true);
+
+        // AUTO-RESUME: Nếu đang trong trận, tự động phân tích ngay khi có lại kết nối
+        if (overlayUI.gameState.isInGame) {
+            console.log('[Extension] Connection restored - Auto resuming analysis...');
+            const fen = overlayUI._getBoardFEN(); // Lấy FEN từ OverlayUI để đồng bộ
+            if (fen) requestAnalysis(fen);
+        }
     });
 
     apiClient.onDisconnect(() => {
@@ -94,6 +102,9 @@ function setupAPICallbacks() {
     });
 }
 
+let lastFenRequestTime = 0;
+let lastProcessedFen = '';
+
 function setupBoardCallbacks() {
     boardDetector.onBoardChange(fen => requestAnalysis(fen));
     boardDetector.onMove((newFEN) => {
@@ -104,13 +115,46 @@ function setupBoardCallbacks() {
         const fen = boardDetector.getCurrentFEN();
         if (fen) requestAnalysis(fen);
     });
+
+    startWatchdog();
+}
+
+function startWatchdog() {
+    setInterval(() => {
+        if (!settings?.autoPlayEnabled) return;
+
+        // Watchdog Logic: Aggressive Fail-safe
+        if (overlayUI.gameState.isInGame && overlayUI.gameState.isMyTurn) {
+            // Nếu đang auto-executing thì bỏ qua
+            if (overlayUI.isAutoExecuting) return;
+
+            const currentFen = boardDetector.getCurrentFEN();
+            if (!currentFen) return;
+
+            // FIX: Bỏ check lastProcessedFen. 
+            // Logic mới: Cứ đến lượt mình mà quá 4s chưa request lại -> Force Analyze
+            // Điều này đảm bảo nếu analysis về mà không đi (do lỗi) thì nó sẽ thử lại mãi.
+            if (Date.now() - lastFenRequestTime > 4000) {
+                console.log('[Watchdog] ♻️ Retry/Stuck logic: Force analyzing...', currentFen);
+                requestAnalysis(currentFen);
+            }
+        }
+    }, 2000);
 }
 
 async function connectToAPI() {
     try {
         await apiClient.connect();
-        if (boardDetector.gameActive) {
-            const fen = boardDetector.getCurrentFEN();
+
+        // Wait a bit for DOM stabilitiztion
+        await sleep(1000);
+
+        // Force check game state via OverlayUI (more robust)
+        overlayUI._updateGameState();
+
+        if (overlayUI.gameState.isInGame) {
+            console.log('[Extension] Initial game detected - Requesting analysis...');
+            const fen = overlayUI._generateFEN() || boardDetector.getCurrentFEN();
             if (fen) requestAnalysis(fen);
         }
     } catch (e) {
@@ -119,12 +163,16 @@ async function connectToAPI() {
 }
 
 function requestAnalysis(fen) {
+    lastFenRequestTime = Date.now(); // Update timestamp cho Watchdog
     overlayUI.showThinking();
-    apiClient.analyzePosition(fen, {
+    const opts = {
         depth: settings.depth,
-        variants: settings.variants,
+        variants: settings.variants || 1,
         mode: 'bestmove'
-    });
+    };
+    if (settings.nodesLimit > 0) opts.nodes = settings.nodesLimit;
+
+    apiClient.analyzePosition(fen, opts);
 }
 
 function queueMove(analysis) {

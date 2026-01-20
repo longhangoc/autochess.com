@@ -15,6 +15,7 @@ class OverlayUI {
     this.isAutoAnalyzing = false;
     this.isAutoExecuting = false;
     this.pieceNameObserver = null;
+    this.lastProcessedElo = 0; // For spam prevention
 
     this.settings = {
       autoPlayEnabled: false,
@@ -56,11 +57,22 @@ class OverlayUI {
     this._createOverlay();
     this._setupEventListeners();
     document.body.appendChild(this.container);
-    this._startGameMonitor();
-    this._startUrlMonitor(); // Theo dõi URL changes
-    if (this.settings.showPieceNames) this._showPieceNames();
-    this.autoQueueManager?.startMonitoring();
-    console.log('[OverlayUI] Ready!');
+
+    // WAITING FOR DOM STABILITY
+    console.log('[OverlayUI] Waiting for Chess.com DOM to stabilize...');
+    let attempts = 0;
+    const stabilizeInterval = setInterval(() => {
+      const ready = this._updateGameState(true); // true = init mode
+      if (ready || attempts > 10) { // Thử 10 lần (5s)
+        clearInterval(stabilizeInterval);
+        console.log('[OverlayUI] DOM Stabilized or Timeout. Starting monitors...');
+        this._startGameMonitor();
+        this._startUrlMonitor();
+        if (this.settings.showPieceNames) this._showPieceNames();
+        this.autoQueueManager?.startMonitoring();
+      }
+      attempts++;
+    }, 500);
   }
 
   async _loadSettings() {
@@ -139,6 +151,10 @@ class OverlayUI {
           </div>
           <button class="btn-analyze" id="btn-analyze"><svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>Phân tích ngay</button>
           <button class="btn-force" id="btn-force"><svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>Force Play</button>
+          <div id="auto-move-timer" class="auto-move-timer" style="display:none">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+            <span>Đi sau: <b id="timer-val">0.0s</b></span>
+          </div>
         </div>
       </div>
       
@@ -279,6 +295,9 @@ class OverlayUI {
       @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
       .mate-alert { color:#ef4444 !important; font-weight:700; animation:mateFlash 0.5s ease-in-out infinite alternate; }
       @keyframes mateFlash { from{opacity:0.7} to{opacity:1} }
+      .auto-move-timer { margin-top:8px; display:flex; align-items:center; justify-content:center; gap:6px; font-size:11px; color:var(--cc-text-muted); background:rgba(0,0,0,0.2); padding:4px; border-radius:4px; }
+      .auto-move-timer svg { color: var(--cc-green); }
+      .auto-move-timer b { color: #fff; font-family:'Roboto Mono', monospace; width: 40px; display:inline-block; text-align:right;}
       .piece-name-label { position:absolute; background:var(--cc-bg); color:var(--cc-text); font-size:9px; font-weight:700; padding:2px 4px; border-radius:2px; pointer-events:none; z-index:100; border:1px solid var(--cc-border); }
       .piece-name-label.white-piece { background:#fff; color:#312e2b; border-color:#d1d1d1; }
       .piece-name-label.black-piece { background:#312e2b; color:#fff; }
@@ -422,7 +441,7 @@ class OverlayUI {
     setTimeout(() => this._updateGameState(), 1000);
   }
 
-  _updateGameState() {
+  _updateGameState(isInitMode = false) {
     try {
       // === SIMPLE BUT ROBUST GAME DETECTION === 
       const board = document.querySelector('wc-chess-board, chess-board');
@@ -481,7 +500,20 @@ class OverlayUI {
 
 
       // Reuse board from above - check for flipped
-      this.gameState.myColor = board?.classList.contains('flipped') ? 'black' : 'white';
+      // Reuse board from above
+      // ROBUST COLOR DETECTION: Check player bottom info NOT just board flip
+      // Board flip means black usually, but user can flip manually.
+      // Better: Check #board-layout-player-bottom .player-component class/attributes
+      let isReady = false;
+      const bottomPlayer = document.querySelector('#board-layout-player-bottom');
+      if (bottomPlayer) {
+        const isFlipped = board?.classList.contains('flipped');
+        this.gameState.myColor = isFlipped ? 'black' : 'white';
+        isReady = true;
+      } else {
+        this.gameState.myColor = board?.classList.contains('flipped') ? 'black' : 'white';
+        isReady = false;
+      }
 
       this._extractPlayerInfo();
 
@@ -492,8 +524,23 @@ class OverlayUI {
       if (this.prevMoveCount !== -1 && totalMoves !== this.prevMoveCount) this.clearHighlights();
       this.prevMoveCount = totalMoves;
 
+      // Improved Turn Detection using Active Clock
+      const myClock = document.querySelector('.clock-bottom, #board-layout-player-bottom .clock-component');
+      const isMyClockActive = myClock && (
+        myClock.classList.contains('clock-player-turn') ||
+        myClock.classList.contains('clock-active') ||
+        myClock.parentElement.classList.contains('clock-player-turn')
+      );
+
       const isWhiteTurn = totalMoves % 2 === 0;
-      this.gameState.isMyTurn = (this.gameState.myColor === 'white') === isWhiteTurn;
+
+      // Ưu tiên check Clock trước, nếu không có clock active mới dùng move logic
+      if (myClock && (document.querySelector('.clock-player-turn') || document.querySelector('.clock-active'))) {
+        this.gameState.isMyTurn = !!isMyClockActive;
+      } else {
+        // Fallback cho game không có clock hoặc clock tĩnh
+        this.gameState.isMyTurn = (this.gameState.myColor === 'white') === isWhiteTurn;
+      }
 
       // Auto-analysis
       if (this.settings.autoAnalyzeEnabled && inGame && this.gameState.isMyTurn &&
@@ -507,23 +554,100 @@ class OverlayUI {
       }
 
       this._updatePlayerInfoUI();
+
+      if (isInitMode) return isReady;
     } catch (e) {
       console.error('[OverlayUI] Error:', e);
     }
   }
 
   _extractPlayerInfo() {
-    const top = document.querySelector('.board-layout-top');
-    const bottom = document.querySelector('.board-layout-bottom');
+    const top = document.querySelector('.board-layout-top, .board-layout-player-top');
+    const bottom = document.querySelector('.board-layout-bottom, .board-layout-player-bottom');
+
+    const getElo = (el) => {
+      if (!el) return '';
+      // 1. Tìm thẻ rating cụ thể
+      const eloEl = el.querySelector('.user-tagline-rating, .rating, [data-cy="user-rating"], .user-rating');
+      if (eloEl) return eloEl.textContent.trim();
+
+      // 2. Fallback: Lấy toàn bộ text và tìm chuỗi số trong ngoặc đơn (1200) hoặc số > 100
+      const fullText = el.textContent || '';
+      const match = fullText.match(/\((\d{3,4})\)/) || fullText.match(/(\d{3,4})/);
+      return match ? match[1] : '';
+    };
 
     if (top) {
-      this.gameState.opponentName = top.querySelector('[class*="username"]')?.textContent?.trim() || '---';
-      this.gameState.opponentElo = top.querySelector('[class*="rating"]')?.textContent?.trim() || '';
+      this.gameState.opponentName = top.querySelector('.user-username, .username, [data-cy="user-username"]')?.textContent?.trim() || '---';
+      this.gameState.opponentElo = getElo(top);
     }
     if (bottom) {
-      this.gameState.myName = bottom.querySelector('[class*="username"]')?.textContent?.trim() || '---';
-      this.gameState.myElo = bottom.querySelector('[class*="rating"]')?.textContent?.trim() || '';
+      this.gameState.myName = bottom.querySelector('.user-username, .username, [data-cy="user-username"]')?.textContent?.trim() || '---';
+      this.gameState.myElo = getElo(bottom);
     }
+
+    // Call Auto-Elo Adjustment
+    this._adjustDifficultyBasedOnElo();
+  }
+
+  _adjustDifficultyBasedOnElo() {
+    if (!this.settings.autoDepthEnabled) {
+      // console.log('[Auto-Elo] Disabled setting'); 
+      return;
+    }
+
+    // Parse Elo (e.g., "1200", "(800)")
+    let val = (this.gameState.opponentElo || '').replace(/\D/g, '');
+    if (!val) {
+      console.log('[Auto-Elo] Waiting for Elo... (Raw:', this.gameState.opponentElo, ')');
+      return;
+    }
+
+    let oppElo = parseInt(val);
+    if (isNaN(oppElo) || oppElo < 100) oppElo = 1000;
+
+    // AVOID SPAM: Only run if Elo changed
+    if (this.lastProcessedElo === oppElo) return;
+    this.lastProcessedElo = oppElo;
+
+    // === TUNING LOGIC 2.0 (With Node Limits) ===
+    let newDepth = 1;
+    let newErrorRate = 0;
+    let nodeLimit = 0; // 0 = unlimited
+
+    if (oppElo < 600) { newDepth = 1; newErrorRate = 70; nodeLimit = 100; }  // 100 nodes = cực ngáo
+    else if (oppElo < 800) { newDepth = 1; newErrorRate = 60; nodeLimit = 500; }  // 500 nodes = hay blunder
+    else if (oppElo < 1000) { newDepth = 1; newErrorRate = 50; nodeLimit = 2000; } // 2000 nodes = chơi tạm được
+    else if (oppElo < 1100) { newDepth = 2; newErrorRate = 40; nodeLimit = 5000; }
+    else if (oppElo < 1150) { newDepth = 2; newErrorRate = 35; nodeLimit = 8000; } // New granular step
+    else if (oppElo < 1200) { newDepth = 3; newErrorRate = 30; nodeLimit = 10000; }
+    else if (oppElo < 1300) { newDepth = 4; newErrorRate = 20; nodeLimit = 25000; }
+    else if (oppElo < 1500) { newDepth = 5; newErrorRate = 10; }
+    else if (oppElo < 1700) { newDepth = 8; newErrorRate = 5; }
+    else if (oppElo < 1900) { newDepth = 10; newErrorRate = 0; }
+    else { newDepth = 15; newErrorRate = 0; }
+
+    console.log(`[Auto-Elo] Humanized: Elo ${oppElo} -> Nodes: ${nodeLimit} (Depth ${newDepth})`);
+
+    // Override settings (Memory only)
+    this.settings.depth = newDepth;
+    this.settings.humanErrorRate = newErrorRate;
+    this.settings.nodesLimit = nodeLimit;
+
+    // Force variants ON request if error rate > 0
+    if (newErrorRate > 0) {
+      this.settings.variants = 3;
+    }
+
+    // UPDATE UI
+    const depthVal = this.container.querySelector('#depth-val');
+    const depthSlider = this.container.querySelector('#slider-depth');
+    if (depthVal) depthVal.textContent = `${newDepth} (Auto)`;
+    if (depthSlider) depthSlider.value = newDepth;
+
+    // console.log(`[Auto-Elo] Humanized: Elo ${oppElo} -> Nodes: ${nodeLimit} (Depth ${newDepth}) UI Updated`);
+
+    // console.log(`[Auto-Elo] Tuned: D${newDepth}, Nodes:${nodeLimit}, Err:${newErrorRate}%`);
   }
 
   _parseMoveList() {
@@ -555,7 +679,14 @@ class OverlayUI {
     }
     console.log('[OverlayUI] Analyzing:', fen);
     this.showThinking();
-    this.apiClient.analyzePosition(fen, { depth: this.settings.depth, mode: 'bestmove' });
+    const opts = {
+      depth: this.settings.depth,
+      mode: 'bestmove',
+      variants: this.settings.variants || 1
+    };
+    if (this.settings.nodesLimit > 0) opts.nodes = this.settings.nodesLimit;
+
+    this.apiClient.analyzePosition(fen, opts);
   }
 
   _generateFEN() {
@@ -589,7 +720,18 @@ class OverlayUI {
     }
 
     const moves = this._parseMoveList();
-    const turn = moves.length % 2 === 0 ? 'w' : 'b';
+    let turn = moves.length % 2 === 0 ? 'w' : 'b';
+
+    // Override turn based on robust Clock Detection
+    if (this.gameState.isInGame) {
+      // Nếu đồng hồ báo là lượt mình -> FEN phải là màu của mình
+      if (this.gameState.isMyTurn) {
+        turn = this.gameState.myColor === 'white' ? 'w' : 'b';
+      } else {
+        // Nếu đồng hồ báo KHÔNG phải lượt mình -> FEN là màu địch
+        turn = this.gameState.myColor === 'white' ? 'b' : 'w';
+      }
+    }
 
     let castling = '';
     if (board[7][4] === 'K') { if (board[7][7] === 'R') castling += 'K'; if (board[7][0] === 'R') castling += 'Q'; }
@@ -621,11 +763,11 @@ class OverlayUI {
       // Reset và thêm best move
       this.alternativeMoves = [analysis.move];
 
-      // Thêm các moves từ continuation nếu có (engine thường trả về multi-pv)
-      if (analysis.continuation) {
-        const contMoves = analysis.continuation.split(' ').filter(m => m.length >= 4).slice(0, 3);
-        this.alternativeMoves = [...new Set([analysis.move, ...contMoves])];
-      }
+      // NOTE: continuation is the PV (Principal Variation) line = future moves
+      // We CANNOT use it for alternative current moves.
+      // Intentional Mistake requires 'multipv' from API, which is not fully implemented yet.
+      // So detailed alternative moves are disabled to prevent playing opponent's moves.
+      this.alternativeMoves = [analysis.move];
     }
 
     const $ = sel => this.container.querySelector(sel);
@@ -665,30 +807,81 @@ class OverlayUI {
       }).join(' ');
     }
 
+    // Re-check turn status to be sure (especially after reload)
+    this._extractPlayerInfo();
+
     if (this.settings.autoPlayEnabled && this.gameState.isMyTurn && analysis.move) {
+      console.log('[AutoPlay] Condition met - Executing move:', analysis.move);
       this._autoExecuteMove(analysis);
+    } else if (this.settings.autoPlayEnabled && analysis.move) {
+      console.log('[AutoPlay] Skipped execution. Reasons:',
+        'isMyTurn:', this.gameState.isMyTurn,
+        'gameActive:', this.gameState.isInGame);
     }
   }
 
   async _autoExecuteMove(analysis) {
     if (!analysis?.move || this.isAutoExecuting) return;
+    // VALIDATE: Chỉ đi quân của mình
+    const validationPiece = document.querySelector(`.piece.square-${analysis.move.slice(0, 2)}`);
+    if (validationPiece) {
+      const isWhitePixel = validationPiece.classList.contains('w');
+      const isMine = (this.gameState.myColor === 'white' && isWhitePixel) ||
+        (this.gameState.myColor === 'black' && !isWhitePixel);
+
+      if (!isMine) {
+        console.warn(`[AutoPlay] ⛔ ABORT: Trying to move opponent's piece! (${analysis.move}) MyColor: ${this.gameState.myColor}`);
+        this.isAutoExecuting = false;
+        return;
+      }
+    }
     this.isAutoExecuting = true;
 
-    // === INTENTIONAL MISTAKE SYSTEM ===
+    // === INTENTIONAL MISTAKE SYSTEM (FIXED) ===
     let selectedMove = analysis.move;
     const errorRate = this.settings.humanErrorRate || 0;
+    const bestFrom = analysis.move.slice(0, 2);
 
     if (errorRate > 0 && this.alternativeMoves.length > 1) {
       const roll = Math.random() * 100;
       if (roll < errorRate) {
-        // Chọn nước thứ 2 hoặc 3 thay vì nước tốt nhất
-        const alternatives = this.alternativeMoves.filter(m => m !== analysis.move);
-        if (alternatives.length > 0) {
-          const idx = Math.floor(Math.random() * Math.min(2, alternatives.length));
-          selectedMove = alternatives[idx];
-          console.log(`[AutoPlay] 🎭 INTENTIONAL MISTAKE: ${analysis.move} → ${selectedMove}`);
+        // Chỉ chọn nước từ CÙNG QUÂN CỜ (cùng ô from) để đảm bảo hợp lệ
+        const sameFromMoves = this.alternativeMoves.filter(m =>
+          m !== analysis.move && m.slice(0, 2) === bestFrom
+        );
+
+        if (sameFromMoves.length > 0) {
+          // Có nước khác từ cùng quân cờ
+          selectedMove = sameFromMoves[0];
+          console.log(`[AutoPlay] 🎭 INTENTIONAL MISTAKE (same piece): ${analysis.move} → ${selectedMove}`);
+        } else {
+          // Không có nước từ cùng quân → thử nước từ quân khác nhưng kiểm tra có quân không
+          const otherMoves = this.alternativeMoves.filter(m => m !== analysis.move);
+          for (const altMove of otherMoves) {
+            const fromSquare = altMove.slice(0, 2);
+            // Kiểm tra có quân ở ô from không
+            const piece = document.querySelector(`.piece[class*="square-${fromSquare[0]}${fromSquare[1]}"]`);
+            if (piece) {
+              // Kiểm tra quân đó có phải màu của mình không
+              const isMyPiece = (this.gameState.myColor === 'white' && piece.className.includes('w')) ||
+                (this.gameState.myColor === 'black' && piece.className.includes('b'));
+              if (isMyPiece) {
+                selectedMove = altMove;
+                console.log(`[AutoPlay] 🎭 INTENTIONAL MISTAKE (diff piece): ${analysis.move} → ${selectedMove}`);
+                break;
+              }
+            }
+          }
         }
       }
+    }
+
+    // Validate move có quân ở ô from không
+    const fromSquare = selectedMove.slice(0, 2);
+    const pieceAtFrom = document.querySelector(`.piece[class*="square-${fromSquare[0]}${fromSquare[1]}"]`);
+    if (!pieceAtFrom) {
+      console.log(`[AutoPlay] ⚠️ No piece at ${fromSquare}, falling back to best move`);
+      selectedMove = analysis.move;
     }
 
     const move = {
@@ -700,6 +893,8 @@ class OverlayUI {
     let delay = 1000;
     if (this.moveExecutor?.humanBehavior) {
       const remainingTime = this._getRemainingClockTime();
+      const timeType = this.boardDetector?.getGameTimeType() || 'rapid';
+
       const base = this.moveExecutor.humanBehavior.calculateThinkTime({
         eval: analysis.eval || 0,
         moveNumber: this.gameState.moves.length + 1,
@@ -707,21 +902,117 @@ class OverlayUI {
         isCheck: analysis.san?.includes('+'),
         positionComplexity: Math.min(1, Math.abs(analysis.eval || 0) / 5),
         timeLimit: this.boardDetector?.getGameTimeLimit() || 600,
-        timeType: this.boardDetector?.getGameTimeType() || 'rapid',
+        timeType: timeType,
         remainingTime: remainingTime
       });
+
       delay = this.tempoTracker?.opponentMoves.length >= 2
-        ? this.tempoTracker.adjustBotThinkTime(base, this.boardDetector?.getGameTimeType()) : base;
+        ? this.tempoTracker.adjustBotThinkTime(base, timeType) : base;
+
+      // === SPEED UP LOGIC ===
+      // Nếu thời gian < 120s (Rapid/Classical) -> Đánh nhanh hơn
+      if (remainingTime > 0 && remainingTime < 120 && (timeType === 'rapid' || timeType === 'classical')) {
+        // Rapidly decrease delay as time goes to 0
+        // Example: 120s -> 1.0x, 60s -> 0.5x, 30s -> 0.25x
+        const speedFactor = Math.pow(remainingTime / 120, 1.5);
+        delay = Math.max(200, delay * speedFactor);
+        console.log(`[AutoPlay] ⚡ Low time (${remainingTime.toFixed(1)}s). Speeding up x${speedFactor.toFixed(2)} -> ${(delay / 1000).toFixed(1)}s`);
+      }
+
+      // Critical Time (< 15s) -> Blitz Mode
+      if (remainingTime > 0 && remainingTime < 15) {
+        delay = Math.min(delay, 100 + Math.random() * 200);
+      }
     }
 
     console.log(`[AutoPlay] Thinking ${(delay / 1000).toFixed(1)}s`);
-    await this._sleep(delay);
+
+    // UI Timer Update Loop
+    const timerEl = this.container.querySelector('#auto-move-timer');
+    const timerVal = this.container.querySelector('#timer-val');
+    timerEl.style.display = 'flex';
+
+    // Board timer (small label on square)
+    const boardTimer = document.getElementById('ext-board-timer');
+    if (boardTimer) boardTimer.style.display = 'block';
+
+    // CLOCK TIMER (Badge bên cạnh đồng hồ)
+    let clockBadge = document.getElementById('ext-clock-timer');
+    if (!clockBadge) {
+      clockBadge = document.createElement('div');
+      clockBadge.id = 'ext-clock-timer';
+      clockBadge.style.cssText = `
+        position: fixed; z-index: 999999;
+        background: #262421; color: #81b64c;
+        border: 1px solid #81b64c; border-radius: 4px;
+        padding: 4px 8px; font-family: 'Roboto Mono', monospace; font-weight: bold; font-size: 14px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        display: none; align-items: center; gap: 6px;
+        pointer-events: none; transition: 0.1s;
+      `;
+      clockBadge.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg><span>0.0s</span>`;
+      document.body.appendChild(clockBadge);
+    }
+
+    // Position Clock Badge
+    const updateBadgePosition = () => {
+      const myClock = document.querySelector('.clock-bottom, #board-layout-player-bottom .clock-component');
+      if (myClock && clockBadge) {
+        const rect = myClock.getBoundingClientRect();
+        clockBadge.style.display = 'flex';
+        clockBadge.style.top = (rect.top + 5) + 'px';
+        clockBadge.style.left = (rect.left - 90) + 'px'; // Left side
+      }
+    };
+    updateBadgePosition();
+
+    const startTime = Date.now();
+    while (Date.now() - startTime < delay) {
+      if (!this.gameState.isMyTurn) break; // Dừng nếu hết lượt
+
+      const remaining = Math.max(0, delay - (Date.now() - startTime));
+      const s = (remaining / 1000).toFixed(1) + 's';
+      timerVal.textContent = s;
+      if (boardTimer) boardTimer.textContent = s;
+      if (clockBadge) {
+        clockBadge.querySelector('span').textContent = s;
+        updateBadgePosition(); // Keep updating pos
+      }
+
+      await this._sleep(100);
+    }
+
+    timerEl.style.display = 'none';
+    if (boardTimer) boardTimer.style.display = 'none';
+    if (clockBadge) clockBadge.style.display = 'none';
 
     if (!this.gameState.isMyTurn) { this.isAutoExecuting = false; return; }
 
     const success = await this.moveExecutor?.executeMove(move);
     if (success) this.clearHighlights();
     this.isAutoExecuting = false;
+  }
+
+  _getRemainingClockTime() {
+    // Tìm đồng hồ của mình (bottom)
+    const myClock = document.querySelector('.clock-bottom, #board-layout-player-bottom .clock-component');
+    if (!myClock) return 600; // Default 10 mins if not found
+
+    // Text ví dụ: "09:41" hoặc "0:05.1"
+    const text = (myClock.innerText || myClock.textContent || '').trim();
+    if (!text) return 600;
+
+    try {
+      const parts = text.split(':');
+      // HH:MM:SS
+      if (parts.length === 3) return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseFloat(parts[2]);
+      // MM:SS or MM:SS.d
+      if (parts.length === 2) return parseInt(parts[0]) * 60 + parseFloat(parts[1]);
+      // SS.d (hiếm, nhưng có thể)
+      return parseFloat(text);
+    } catch (e) {
+      return 600;
+    }
   }
 
   _executeForcePlay() {
@@ -745,6 +1036,32 @@ class OverlayUI {
     const toEl = this._getSquareOverlay(a.to);
     fromEl?.classList.add('ext-highlight-from');
     toEl?.classList.add('ext-highlight-to');
+
+    // Add timer badge to target square
+    const badge = document.createElement('div');
+    badge.className = 'ext-timer-badge';
+    badge.id = 'ext-board-timer';
+    // Tăng z-index lên 1000, font to hơn, background rõ hơn
+    badge.style.cssText = `
+      position: absolute;
+      bottom: 2px;
+      right: 2px;
+      background: rgba(38, 36, 33, 0.9);
+      color: #81b64c;
+      border: 1px solid #81b64c;
+      font-size: 11px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-family: 'Roboto Mono', monospace;
+      font-weight: bold;
+      pointer-events: none;
+      z-index: 1000;
+      white-space: nowrap;
+      display: none;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+    `;
+    toEl?.appendChild(badge);
+
     this._drawArrow(fromEl, toEl);
   }
 
@@ -865,19 +1182,7 @@ class OverlayUI {
   }
 
   _updateAutoDepth() {
-    const elo = parseInt(this.gameState.opponentElo?.replace(/\D/g, '') || '0');
-    if (!elo) return;
-
-    const depths = [[800, 2], [1000, 4], [1200, 6], [1500, 8], [1800, 10], [2000, 12], [2200, 14], [2500, 16], [2700, 18]];
-    let newDepth = 18;
-    for (const [e, d] of depths) { if (elo < e) { newDepth = d; break; } }
-
-    if (newDepth !== this.settings.depth) {
-      this.settings.depth = newDepth;
-      this.container.querySelector('#depth-val').textContent = `${newDepth} (Auto)`;
-      this.container.querySelector('#slider-depth').value = newDepth;
-      console.log(`[OverlayUI] Auto depth: ${newDepth} for Elo ${elo}`);
-    }
+    this._adjustDifficultyBasedOnElo();
   }
 
   _showPieceNames() {
